@@ -3,11 +3,14 @@ import sys
 import json
 import time
 import datetime
+import urllib.parse
+import requests
 from tiktok_uploader.upload import upload_video
 
 STATE_FILE = "estado_publicaciones.json"
 CATALOG_FILE = "catalogo_videos.json"
 COOKIES_FILE = "cookies.json"
+RELEASE_BASE_URL = "https://github.com/eddiesboutique954-prog/tiktok-cloud-autopublisher/releases/download/videos-batch-1"
 
 def cargar_json(path):
     if os.path.exists(path):
@@ -21,6 +24,18 @@ def cargar_json(path):
 def guardar_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+def descargar_video(url, destino):
+    print(f"Descargando video desde cloud storage: {url}...")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    with requests.get(url, headers=headers, stream=True) as r:
+        r.raise_for_status()
+        with open(destino, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
+    size_mb = os.path.getsize(destino) / (1024 * 1024)
+    print(f"Descarga completa: {size_mb:.2f} MB")
 
 def main():
     print("=" * 60)
@@ -54,20 +69,24 @@ def main():
     print(f"\n--> Procesando siguiente video: {nombre_archivo}")
     print(f"Descripcion viral:\n{descripcion}\n")
     
-    # Si viene por URL remota de descarga (GitHub Releases o Drive), descargarlo
     archivo_final = None
     if video_url:
-        print(f"Descargando video desde cloud storage: {video_url}...")
-        import urllib.request
         archivo_final = "temp_video.mp4"
-        urllib.request.urlretrieve(video_url, archivo_final)
+        descargar_video(video_url, archivo_final)
     elif local_path and os.path.exists(local_path):
         archivo_final = local_path
     elif os.path.exists(nombre_archivo):
         archivo_final = nombre_archivo
     else:
-        print(f"[ERROR] No se encontro el archivo fisico: {nombre_archivo}")
-        sys.exit(1)
+        # Fallback a release de GitHub
+        encoded_name = urllib.parse.quote(nombre_archivo)
+        cloud_url = f"{RELEASE_BASE_URL}/{encoded_name}"
+        archivo_final = "temp_video.mp4"
+        try:
+            descargar_video(cloud_url, archivo_final)
+        except Exception as e:
+            print(f"[ERROR] No se pudo obtener el video ni local ni de la nube: {e}")
+            sys.exit(1)
         
     print(f"Publicando en TikTok mediante sesion autorizada...")
     
