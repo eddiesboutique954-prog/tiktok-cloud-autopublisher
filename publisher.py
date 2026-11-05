@@ -5,7 +5,7 @@ import time
 import datetime
 import urllib.parse
 import requests
-from tiktok_uploader.upload import upload_video
+from playwright.sync_api import sync_playwright
 
 STATE_FILE = "estado_publicaciones.json"
 CATALOG_FILE = "catalogo_videos.json"
@@ -36,6 +36,131 @@ def descargar_video(url, destino):
                     f.write(chunk)
     size_mb = os.path.getsize(destino) / (1024 * 1024)
     print(f"Descarga completa: {size_mb:.2f} MB")
+
+def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
+    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO ---")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--window-size=1280,900"
+            ]
+        )
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 900}
+        )
+        
+        # 1. Inyectar cookies de sesion
+        print("Inyectando cookies en el contexto del navegador...")
+        pw_cookies = []
+        for c in cookies_data:
+            cookie = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c.get("domain", ".tiktok.com"),
+                "path": c.get("path", "/")
+            }
+            if "secure" in c:
+                cookie["secure"] = c["secure"]
+            if "httpOnly" in c:
+                cookie["httpOnly"] = c["httpOnly"]
+            if "sameSite" in c and c["sameSite"] in ["Strict", "Lax", "None"]:
+                cookie["sameSite"] = c["sameSite"]
+            pw_cookies.append(cookie)
+            
+        context.add_cookies(pw_cookies)
+        page = context.new_page()
+        
+        # 2. Navegar a TikTok Studio Upload
+        print("Navegando a TikTok Studio Upload...")
+        page.goto("https://www.tiktok.com/tiktokstudio/upload?from=upload", wait_until="networkidle", timeout=60000)
+        time.sleep(5)
+        
+        print(f"URL actual: {page.url}")
+        if "login" in page.url.lower():
+            page.screenshot(path="error_login.png")
+            raise Exception("ERROR: TikTok redirigió al login. Las cookies pueden haber expirado.")
+            
+        # 3. Cerrar popups iniciales si existen
+        for _ in range(3):
+            try:
+                btn_popup = page.locator('div[role="dialog"] button, button:has-text("Entendido"), button:has-text("Aceptar")').first
+                if btn_popup.is_visible():
+                    btn_popup.click()
+                    time.sleep(1)
+            except Exception:
+                pass
+                
+        # 4. Inyectar archivo de video
+        print(f"Cargando archivo de video ({os.path.basename(video_path)})...")
+        file_input = page.locator('input[type="file"]')
+        file_input.wait_for(state="attached", timeout=30000)
+        file_input.set_input_files(video_path)
+        print("Archivo asignado al input. Esperando procesamiento inicial...")
+        time.sleep(8)
+        
+        # 5. Inyectar descripcion viral
+        print("Inyectando descripcion viral...")
+        try:
+            editor = page.locator('div[contenteditable="true"]').first
+            editor.wait_for(state="visible", timeout=15000)
+            editor.click()
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            page.keyboard.insert_text(descripcion)
+            print("Descripcion colocada con exito.")
+        except Exception as e:
+            print(f"Aviso en editor de descripcion: {e}")
+            
+        # 6. Scroll hacia abajo para ver opciones y boton Publicar
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(2)
+        
+        # 7. Buscar boton de Publicar / Post
+        print("Buscando boton de publicacion...")
+        btn_publicar = page.locator('button:has-text("Publicar"), button:has-text("Post"), button[data-e2e="post_video_button"]').first
+        btn_publicar.wait_for(state="attached", timeout=30000)
+        
+        # Esperar a que el video termine de subir (boton deje de estar deshabilitado)
+        print("Esperando que TikTok termine de procesar el video...")
+        publicado = False
+        for sec in range(90):
+            is_disabled = (
+                btn_publicar.get_attribute("aria-disabled") == "true" or 
+                btn_publicar.get_attribute("data-disabled") == "true" or 
+                btn_publicar.is_disabled()
+            )
+            if not is_disabled:
+                print(f"¡Boton de publicacion habilitado tras {sec} segundos!")
+                time.sleep(2)
+                btn_publicar.scroll_into_view_if_needed()
+                btn_publicar.click(force=True)
+                publicado = True
+                break
+            time.sleep(1)
+            
+        if not publicado:
+            page.screenshot(path="error_timeout_boton.png")
+            raise Exception("Timeout: El boton de publicar nunca se habilito.")
+            
+        print("Click en Publicar realizado. Esperando confirmacion de TikTok...")
+        time.sleep(12)
+        
+        # Tomar captura final de confirmacion
+        page.screenshot(path="confirmacion_publicacion.png")
+        print(f"URL tras publicar: {page.url}")
+        
+        # Verificar que no estemos en un error
+        if "error" in page.url.lower():
+            raise Exception("TikTok devolvio una URL de error tras publicar.")
+            
+        print("¡Video publicado exitosamente en TikTok!")
+        browser.close()
 
 def main():
     print("=" * 60)
@@ -82,41 +207,35 @@ def main():
         encoded_name = urllib.parse.quote(nombre_archivo)
         cloud_url = f"{RELEASE_BASE_URL}/{encoded_name}"
         archivo_final = "temp_video.mp4"
-        try:
-            descargar_video(cloud_url, archivo_final)
-        except Exception as e:
-            print(f"[ERROR] No se pudo obtener el video ni local ni de la nube: {e}")
-            sys.exit(1)
+        descargar_video(cloud_url, archivo_final)
         
     print(f"Publicando en TikTok mediante sesion autorizada...")
-    
-    # Cargar cookies json
     cookies_data = cargar_json(COOKIES_FILE)
-    
-    try:
-        upload_video(
-            filename=archivo_final,
-            description=descripcion,
-            cookies_list=cookies_data if isinstance(cookies_data, list) else None,
-            cookies=COOKIES_FILE if not isinstance(cookies_data, list) else None,
-            browser="chromium",
-            headless=True
-        )
-        print(f"\n[EXITO TOTAL] ¡Video {nombre_archivo} publicado con exito en TikTok!")
+    if not cookies_data:
+        print("[ERROR] Archivo de cookies no encontrado o vacio.")
+        sys.exit(1)
         
-        # Guardar en el historial
+    try:
+        publicar_en_tiktok_playwright(archivo_final, descripcion, cookies_data)
+        
+        # Guardar en el historial SOLO si termino sin excepcion
         estado[nombre_archivo] = {
             "fecha_publicacion": datetime.datetime.now().isoformat(),
             "estado": "publicado_cloud"
         }
         guardar_json(STATE_FILE, estado)
+        print(f"\n[EXITO TOTAL] ¡Video {nombre_archivo} registrado y guardado con exito!")
         
         # Limpiar temporal
         if archivo_final == "temp_video.mp4" and os.path.exists(archivo_final):
             os.remove(archivo_final)
             
     except Exception as e:
-        print(f"[ERROR EN SUBIDA]: {e}")
+        print(f"\n[ERROR CRITICO EN PUBLICACION]: {e}")
+        # Limpiar temporal si fallo
+        if archivo_final == "temp_video.mp4" and os.path.exists(archivo_final):
+            os.remove(archivo_final)
+        # Salir con error para que GitHub Actions alerte y no guarde en estado
         sys.exit(1)
 
 if __name__ == "__main__":
