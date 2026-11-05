@@ -42,7 +42,7 @@ def dismiss_popups(page):
     for _ in range(3):
         try:
             # 1. Cancelar modal accidental 'Are you sure you want to exit?' si aparece
-            exit_modal = page.locator('button:text-is("Cancel")')
+            exit_modal = page.locator('div[role="dialog"] button:text-is("Cancel")')
             if exit_modal.count() > 0 and exit_modal.first.is_visible():
                 print("Cancelando modal de salida accidental...")
                 exit_modal.first.click(force=True)
@@ -58,7 +58,7 @@ def dismiss_popups(page):
             pass
 
 def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
-    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO (ULTRA RESILIENTE V3) ---")
+    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO (ULTRA RESILIENTE V4) ---")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -171,7 +171,6 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
         time.sleep(2)
         
         # 7. Localizar el boton de publicar real
-        # CRITICO: Usar :text-is("Post") o [data-e2e="post_video_button"] para NO cliquear el menu "Posts" del sidebar
         print("Buscando boton de publicacion del formulario...")
         btn_publicar = page.locator('button[data-e2e="post_video_button"], button:text-is("Post"), button:text-is("Publicar")').last
         btn_publicar.wait_for(state="attached", timeout=30000)
@@ -202,15 +201,31 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
             page.screenshot(path="error_timeout_boton.png")
             raise Exception("Timeout: El boton de publicar nunca se habilito.")
             
-        print("Click en Post/Publicar ejecutado. Esperando confirmacion de TikTok...")
+        print("Click en Post/Publicar ejecutado.")
         
-        # 8. Esperar la confirmacion real de TikTok
+        # 8. RESOLVER EL MODAL 'Continue to post? [Post now]' SI APARECE (Copyright check)
+        print("Verificando si aparece el modal de confirmacion de copyright ('Continue to post?')...")
+        time.sleep(3)
+        for _ in range(8):
+            try:
+                btn_post_now = page.locator('button:has-text("Post now"), button:has-text("Publicar ahora"), div[role="dialog"] button:has-text("Post now")').first
+                if btn_post_now.is_visible():
+                    print("¡Modal 'Continue to post?' detectado! Clickeando 'Post now'...")
+                    page.screenshot(path="4_modal_post_now.png")
+                    btn_post_now.click(force=True)
+                    time.sleep(2)
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        
+        # 9. Esperar la confirmacion real de TikTok
+        print("Esperando la confirmacion real de TikTok (Manage your posts / Video published)...")
         exito_confirmado = False
         for wait_s in range(35):
             time.sleep(1)
-            dismiss_popups(page)
             # Detectar mensaje o botones de exito
-            success_indicators = page.locator('button:has-text("Manage your posts"), button:has-text("Administrar publicaciones"), button:has-text("Upload another video"), div:has-text("Uploaded"), div:has-text("Your video has been uploaded")')
+            success_indicators = page.locator('button:has-text("Manage your posts"), button:has-text("Administrar publicaciones"), button:has-text("Upload another video"), div:has-text("Uploaded"), div:has-text("Video published"), div:has-text("Your video has been uploaded")')
             if success_indicators.count() > 0 or "content" in page.url.lower():
                 print(f"¡Confirmacion de publicacion exitosa detectada tras {wait_s} segundos!")
                 exito_confirmado = True
@@ -221,9 +236,15 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
         print(f"URL final: {page.url}")
         
         if not exito_confirmado:
-            print("Aviso: No se detecto el modal de exito explicito, verificando URL...")
+            # Si no hubo confirmacion explicita, verificar si seguimos en la misma pantalla de subida
+            if "upload" in page.url.lower():
+                # Comprobar si el modal de copyright o algo sigue bloqueando
+                btn_check = page.locator('button:has-text("Post now")')
+                if btn_check.count() > 0 and btn_check.first.is_visible():
+                    btn_check.first.click(force=True)
+                    time.sleep(5)
             
-        print("¡Proceso de publicacion completado con exito!")
+        print("¡Proceso de publicacion completado!")
         browser.close()
 
 def main():
