@@ -78,10 +78,12 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
         
         # 2. Navegar a TikTok Studio Upload
         print("Navegando a TikTok Studio Upload...")
-        page.goto("https://www.tiktok.com/tiktokstudio/upload?from=upload", wait_until="networkidle", timeout=60000)
-        time.sleep(5)
+        page.goto("https://www.tiktok.com/tiktokstudio/upload?from=upload", wait_until="domcontentloaded", timeout=60000)
+        time.sleep(6)
         
         print(f"URL actual: {page.url}")
+        page.screenshot(path="1_inicio_pagina.png")
+        
         if "login" in page.url.lower():
             page.screenshot(path="error_login.png")
             raise Exception("ERROR: TikTok redirigió al login. Las cookies pueden haber expirado.")
@@ -98,11 +100,32 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
                 
         # 4. Inyectar archivo de video
         print(f"Cargando archivo de video ({os.path.basename(video_path)})...")
-        file_input = page.locator('input[type="file"]')
-        file_input.wait_for(state="attached", timeout=30000)
-        file_input.set_input_files(video_path)
+        file_input = page.locator('input[type="file"]').first
+        file_attached = False
+        try:
+            file_input.wait_for(state="attached", timeout=15000)
+            file_input.set_input_files(video_path)
+            file_attached = True
+        except Exception as ex_file:
+            print(f"Buscando input de archivo en iframes: {ex_file}")
+            for frame in page.frames:
+                try:
+                    f_input = frame.locator('input[type="file"]').first
+                    if f_input.count() > 0:
+                        f_input.set_input_files(video_path)
+                        file_attached = True
+                        print("Archivo inyectado dentro de un iframe!")
+                        break
+                except Exception:
+                    pass
+                    
+        if not file_attached:
+            page.screenshot(path="error_no_file_input.png")
+            raise Exception("No se encontró el input de archivo en la página.")
+            
         print("Archivo asignado al input. Esperando procesamiento inicial...")
         time.sleep(8)
+        page.screenshot(path="2_video_cargado.png")
         
         # 5. Inyectar descripcion viral
         print("Inyectando descripcion viral...")
@@ -139,6 +162,7 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
                 print(f"¡Boton de publicacion habilitado tras {sec} segundos!")
                 time.sleep(2)
                 btn_publicar.scroll_into_view_if_needed()
+                page.screenshot(path="3_antes_de_publicar.png")
                 btn_publicar.click(force=True)
                 publicado = True
                 break
@@ -155,7 +179,6 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
         page.screenshot(path="confirmacion_publicacion.png")
         print(f"URL tras publicar: {page.url}")
         
-        # Verificar que no estemos en un error
         if "error" in page.url.lower():
             raise Exception("TikTok devolvio una URL de error tras publicar.")
             
