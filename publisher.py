@@ -38,10 +38,18 @@ def descargar_video(url, destino):
     print(f"Descarga completa: {size_mb:.2f} MB")
 
 def dismiss_popups(page):
-    """Cierra avisos emergentes como 'New editing features added [Got it]' o modales de bienvenida."""
+    """Cierra modales de ayuda como 'Got it', 'Entendido' o cancela salidas accidentales."""
     for _ in range(3):
         try:
-            popups = page.locator('button:has-text("Got it"), button:has-text("Entendido"), button:has-text("Aceptar"), div[role="dialog"] button:has-text("Got it")')
+            # 1. Cancelar modal accidental 'Are you sure you want to exit?' si aparece
+            exit_modal = page.locator('button:text-is("Cancel")')
+            if exit_modal.count() > 0 and exit_modal.first.is_visible():
+                print("Cancelando modal de salida accidental...")
+                exit_modal.first.click(force=True)
+                time.sleep(1)
+
+            # 2. Cerrar modales 'Got it'
+            popups = page.locator('button:has-text("Got it"), button:has-text("Entendido"), button:has-text("Aceptar")')
             if popups.count() > 0 and popups.first.is_visible():
                 print("Cerrando modal emergente (Got it / Entendido)...")
                 popups.first.click(force=True)
@@ -50,7 +58,7 @@ def dismiss_popups(page):
             pass
 
 def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
-    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO (ULTRA RESILIENTE) ---")
+    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO (ULTRA RESILIENTE V3) ---")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -139,29 +147,39 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
             editor = page.locator('div[contenteditable="true"]').first
             editor.wait_for(state="visible", timeout=15000)
             editor.click()
-            # Seleccionar todo el texto previo (como temp_video) y borrarlo
             page.keyboard.press("Control+A")
             page.keyboard.press("Backspace")
             time.sleep(1)
             page.keyboard.insert_text(descripcion)
-            print("Descripcion viral colocada correctamente.")
+            print("Descripcion viral colocada con exito.")
         except Exception as e:
             print(f"Aviso en editor de descripcion: {e}")
             
-        # Cerrar popups de nuevo
         dismiss_popups(page)
         
-        # 6. Scroll hacia abajo de la pagina
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        # 6. Scroll hacia abajo de todos los contenedores desplazables
+        print("Haciendo scroll hacia el pie del formulario...")
+        page.evaluate("""
+            const elements = document.querySelectorAll('*');
+            for (const el of elements) {
+                if (el.scrollHeight > el.clientHeight) {
+                    el.scrollTop = el.scrollHeight;
+                }
+            }
+            window.scrollTo(0, document.body.scrollHeight);
+        """)
         time.sleep(2)
         
-        # 7. Localizar el boton de publicar (Post / Publicar)
-        print("Buscando boton de publicacion...")
-        btn_publicar = page.locator('button:has-text("Post"), button:has-text("Publicar")').first
+        # 7. Localizar el boton de publicar real
+        # CRITICO: Usar :text-is("Post") o [data-e2e="post_video_button"] para NO cliquear el menu "Posts" del sidebar
+        print("Buscando boton de publicacion del formulario...")
+        btn_publicar = page.locator('button[data-e2e="post_video_button"], button:text-is("Post"), button:text-is("Publicar")').last
         btn_publicar.wait_for(state="attached", timeout=30000)
+        btn_publicar.scroll_into_view_if_needed()
+        time.sleep(1)
         
         # Esperar hasta 90s a que el video termine de subir y se habilite el boton
-        print("Esperando que el boton de publicacion se habilite...")
+        print("Esperando que el boton Post/Publicar se habilite...")
         publicado = False
         for sec in range(90):
             dismiss_popups(page)
@@ -184,25 +202,26 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
             page.screenshot(path="error_timeout_boton.png")
             raise Exception("Timeout: El boton de publicar nunca se habilito.")
             
-        print("Click en Post/Publicar ejecutado. Esperando respuesta de TikTok...")
+        print("Click en Post/Publicar ejecutado. Esperando confirmacion de TikTok...")
         
         # 8. Esperar la confirmacion real de TikTok
         exito_confirmado = False
-        for wait_s in range(30):
+        for wait_s in range(35):
             time.sleep(1)
             dismiss_popups(page)
-            # TikTok muestra modal de exito: 'Manage your posts' o 'View profile' o url cambia a content
-            success_indicators = page.locator('button:has-text("Manage your posts"), button:has-text("Administrar publicaciones"), button:has-text("Upload another video"), div:has-text("Uploaded")')
+            # Detectar mensaje o botones de exito
+            success_indicators = page.locator('button:has-text("Manage your posts"), button:has-text("Administrar publicaciones"), button:has-text("Upload another video"), div:has-text("Uploaded"), div:has-text("Your video has been uploaded")')
             if success_indicators.count() > 0 or "content" in page.url.lower():
-                print(f"¡Confirmacion detectada por TikTok tras {wait_s} segundos!")
+                print(f"¡Confirmacion de publicacion exitosa detectada tras {wait_s} segundos!")
                 exito_confirmado = True
                 break
                 
+        time.sleep(3)
         page.screenshot(path="confirmacion_publicacion.png")
         print(f"URL final: {page.url}")
         
         if not exito_confirmado:
-            print("Aviso: No se detecto el modal de exito explicito, pero el click fue realizado.")
+            print("Aviso: No se detecto el modal de exito explicito, verificando URL...")
             
         print("¡Proceso de publicacion completado con exito!")
         browser.close()
@@ -219,7 +238,6 @@ def main():
         print("[ERROR] Catalogo de videos no encontrado o vacio.")
         sys.exit(1)
         
-    # Filtrar videos pendientes
     pendientes = [v for v in catalogo if v["archivo"] not in estado]
     print(f"Total videos en catalogo: {len(catalogo)}")
     print(f"Videos ya publicados: {len(estado)}")
@@ -229,7 +247,6 @@ def main():
         print("¡Todos los videos han sido publicados con exito!")
         return
 
-    # Tomar el siguiente video en turno
     video_actual = pendientes[0]
     nombre_archivo = video_actual["archivo"]
     descripcion = video_actual.get("texto_publicacion", "Video viral #parati #fyp")
@@ -248,7 +265,6 @@ def main():
     elif os.path.exists(nombre_archivo):
         archivo_final = nombre_archivo
     else:
-        # Fallback a release de GitHub
         encoded_name = urllib.parse.quote(nombre_archivo)
         cloud_url = f"{RELEASE_BASE_URL}/{encoded_name}"
         archivo_final = "temp_video.mp4"
@@ -271,7 +287,6 @@ def main():
         guardar_json(STATE_FILE, estado)
         print(f"\n[EXITO TOTAL] ¡Video {nombre_archivo} registrado y guardado con exito!")
         
-        # Limpiar temporal
         if archivo_final == "temp_video.mp4" and os.path.exists(archivo_final):
             os.remove(archivo_final)
             
