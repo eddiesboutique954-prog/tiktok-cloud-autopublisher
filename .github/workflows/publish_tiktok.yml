@@ -2,11 +2,11 @@ name: TikTok Cloud Autopublisher (4 Videos Diarios - Zero Cost)
 
 on:
   schedule:
-    # 4 Horarios Colombia UTC-5:
-    - cron: '0 16 * * *'   # 11:00 AM Colombia
-    - cron: '0 19 * * *'   # 02:00 PM Colombia
-    - cron: '30 23 * * *'  # 06:30 PM Colombia
-    - cron: '0 2 * * *'    # 09:00 PM Colombia
+    # 4 Horarios Colombia UTC-5 (Minutos desfasados para evitar saturación de GitHub):
+    - cron: '5 16 * * *'   # 11:05 AM Colombia (16:05 UTC)
+    - cron: '5 19 * * *'   # 02:05 PM Colombia (19:05 UTC)
+    - cron: '35 23 * * *'  # 06:35 PM Colombia (23:35 UTC)
+    - cron: '5 2 * * *'    # 09:05 PM Colombia (02:05 UTC)
   workflow_dispatch:
 
 permissions:
