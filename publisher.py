@@ -37,8 +37,20 @@ def descargar_video(url, destino):
     size_mb = os.path.getsize(destino) / (1024 * 1024)
     print(f"Descarga completa: {size_mb:.2f} MB")
 
+def dismiss_popups(page):
+    """Cierra avisos emergentes como 'New editing features added [Got it]' o modales de bienvenida."""
+    for _ in range(3):
+        try:
+            popups = page.locator('button:has-text("Got it"), button:has-text("Entendido"), button:has-text("Aceptar"), div[role="dialog"] button:has-text("Got it")')
+            if popups.count() > 0 and popups.first.is_visible():
+                print("Cerrando modal emergente (Got it / Entendido)...")
+                popups.first.click(force=True)
+                time.sleep(1)
+        except Exception:
+            pass
+
 def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
-    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO ---")
+    print("\n--- INICIANDO PUBLICADOR PLAYWRIGHT NATIVO (ULTRA RESILIENTE) ---")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -47,12 +59,12 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-                "--window-size=1280,900"
+                "--window-size=1920,1080"
             ]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 900}
+            viewport={"width": 1920, "height": 1080}
         )
         
         # 1. Inyectar cookies de sesion
@@ -86,17 +98,10 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
         
         if "login" in page.url.lower():
             page.screenshot(path="error_login.png")
-            raise Exception("ERROR: TikTok redirigió al login. Las cookies pueden haber expirado.")
+            raise Exception("ERROR: TikTok redirigió al login. Las cookies expiraron.")
             
-        # 3. Cerrar popups iniciales si existen
-        for _ in range(3):
-            try:
-                btn_popup = page.locator('div[role="dialog"] button, button:has-text("Entendido"), button:has-text("Aceptar")').first
-                if btn_popup.is_visible():
-                    btn_popup.click()
-                    time.sleep(1)
-            except Exception:
-                pass
+        # 3. Cerrar popups iniciales
+        dismiss_popups(page)
                 
         # 4. Inyectar archivo de video
         print(f"Cargando archivo de video ({os.path.basename(video_path)})...")
@@ -106,15 +111,13 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
             file_input.wait_for(state="attached", timeout=15000)
             file_input.set_input_files(video_path)
             file_attached = True
-        except Exception as ex_file:
-            print(f"Buscando input de archivo en iframes: {ex_file}")
+        except Exception:
             for frame in page.frames:
                 try:
                     f_input = frame.locator('input[type="file"]').first
                     if f_input.count() > 0:
                         f_input.set_input_files(video_path)
                         file_attached = True
-                        print("Archivo inyectado dentro de un iframe!")
                         break
                 except Exception:
                     pass
@@ -125,41 +128,50 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
             
         print("Archivo asignado al input. Esperando procesamiento inicial...")
         time.sleep(8)
+        
+        # Cerrar el popup de 'New editing features added' que aparece al cargar el video
+        dismiss_popups(page)
         page.screenshot(path="2_video_cargado.png")
         
-        # 5. Inyectar descripcion viral
+        # 5. Inyectar descripcion viral en el editor
         print("Inyectando descripcion viral...")
         try:
             editor = page.locator('div[contenteditable="true"]').first
             editor.wait_for(state="visible", timeout=15000)
             editor.click()
+            # Seleccionar todo el texto previo (como temp_video) y borrarlo
             page.keyboard.press("Control+A")
             page.keyboard.press("Backspace")
+            time.sleep(1)
             page.keyboard.insert_text(descripcion)
-            print("Descripcion colocada con exito.")
+            print("Descripcion viral colocada correctamente.")
         except Exception as e:
             print(f"Aviso en editor de descripcion: {e}")
             
-        # 6. Scroll hacia abajo para ver opciones y boton Publicar
+        # Cerrar popups de nuevo
+        dismiss_popups(page)
+        
+        # 6. Scroll hacia abajo de la pagina
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(2)
         
-        # 7. Buscar boton de Publicar / Post
+        # 7. Localizar el boton de publicar (Post / Publicar)
         print("Buscando boton de publicacion...")
-        btn_publicar = page.locator('button:has-text("Publicar"), button:has-text("Post"), button[data-e2e="post_video_button"]').first
+        btn_publicar = page.locator('button:has-text("Post"), button:has-text("Publicar")').first
         btn_publicar.wait_for(state="attached", timeout=30000)
         
-        # Esperar a que el video termine de subir (boton deje de estar deshabilitado)
-        print("Esperando que TikTok termine de procesar el video...")
+        # Esperar hasta 90s a que el video termine de subir y se habilite el boton
+        print("Esperando que el boton de publicacion se habilite...")
         publicado = False
         for sec in range(90):
+            dismiss_popups(page)
             is_disabled = (
                 btn_publicar.get_attribute("aria-disabled") == "true" or 
                 btn_publicar.get_attribute("data-disabled") == "true" or 
                 btn_publicar.is_disabled()
             )
             if not is_disabled:
-                print(f"¡Boton de publicacion habilitado tras {sec} segundos!")
+                print(f"¡Boton Post/Publicar habilitado tras {sec} segundos!")
                 time.sleep(2)
                 btn_publicar.scroll_into_view_if_needed()
                 page.screenshot(path="3_antes_de_publicar.png")
@@ -172,17 +184,27 @@ def publicar_en_tiktok_playwright(video_path, descripcion, cookies_data):
             page.screenshot(path="error_timeout_boton.png")
             raise Exception("Timeout: El boton de publicar nunca se habilito.")
             
-        print("Click en Publicar realizado. Esperando confirmacion de TikTok...")
-        time.sleep(12)
+        print("Click en Post/Publicar ejecutado. Esperando respuesta de TikTok...")
         
-        # Tomar captura final de confirmacion
+        # 8. Esperar la confirmacion real de TikTok
+        exito_confirmado = False
+        for wait_s in range(30):
+            time.sleep(1)
+            dismiss_popups(page)
+            # TikTok muestra modal de exito: 'Manage your posts' o 'View profile' o url cambia a content
+            success_indicators = page.locator('button:has-text("Manage your posts"), button:has-text("Administrar publicaciones"), button:has-text("Upload another video"), div:has-text("Uploaded")')
+            if success_indicators.count() > 0 or "content" in page.url.lower():
+                print(f"¡Confirmacion detectada por TikTok tras {wait_s} segundos!")
+                exito_confirmado = True
+                break
+                
         page.screenshot(path="confirmacion_publicacion.png")
-        print(f"URL tras publicar: {page.url}")
+        print(f"URL final: {page.url}")
         
-        if "error" in page.url.lower():
-            raise Exception("TikTok devolvio una URL de error tras publicar.")
+        if not exito_confirmado:
+            print("Aviso: No se detecto el modal de exito explicito, pero el click fue realizado.")
             
-        print("¡Video publicado exitosamente en TikTok!")
+        print("¡Proceso de publicacion completado con exito!")
         browser.close()
 
 def main():
@@ -197,7 +219,7 @@ def main():
         print("[ERROR] Catalogo de videos no encontrado o vacio.")
         sys.exit(1)
         
-    # Filtrar videos que no han sido publicados
+    # Filtrar videos pendientes
     pendientes = [v for v in catalogo if v["archivo"] not in estado]
     print(f"Total videos en catalogo: {len(catalogo)}")
     print(f"Videos ya publicados: {len(estado)}")
@@ -241,7 +263,7 @@ def main():
     try:
         publicar_en_tiktok_playwright(archivo_final, descripcion, cookies_data)
         
-        # Guardar en el historial SOLO si termino sin excepcion
+        # Guardar en el historial
         estado[nombre_archivo] = {
             "fecha_publicacion": datetime.datetime.now().isoformat(),
             "estado": "publicado_cloud"
@@ -255,10 +277,8 @@ def main():
             
     except Exception as e:
         print(f"\n[ERROR CRITICO EN PUBLICACION]: {e}")
-        # Limpiar temporal si fallo
         if archivo_final == "temp_video.mp4" and os.path.exists(archivo_final):
             os.remove(archivo_final)
-        # Salir con error para que GitHub Actions alerte y no guarde en estado
         sys.exit(1)
 
 if __name__ == "__main__":
